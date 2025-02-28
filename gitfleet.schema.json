@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "GitFleet Configuration Schema",
+  "description": "Schema for GitFleet configuration files that manage multiple Git repositories",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "repositories"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "description": "Version of the GitFleet schema being used",
+      "enum": [
+        "v1"
+      ]
+    },
+    "repositories": {
+      "type": "array",
+      "description": "List of repositories to manage",
+      "items": {
+        "$ref": "#/definitions/repository"
+      },
+      "minItems": 1
+    }
+  },
+  "definitions": {
+    "repository": {
+      "type": "object",
+      "required": [
+        "src",
+        "dest",
+        "revision"
+      ],
+      "properties": {
+        "src": {
+          "type": "string",
+          "description": "Repository URL (HTTPS or SSH)",
+          "pattern": "^(https?://|git@).+\\.git$"
+        },
+        "dest": {
+          "type": "string",
+          "description": "Local destination path (relative to the fleet configuration file)"
+        },
+        "revision": {
+          "type": "string",
+          "description": "Git revision (SHA1, tag reference, or branch reference)",
+          "pattern": "^(refs/tags/|refs/heads/|[0-9a-f]{7,40}).*$"
+        },
+        "shallow-clone": {
+          "type": "boolean",
+          "description": "Enable shallow clone",
+          "default": false
+        },
+        "clone-submodule": {
+          "type": "boolean",
+          "description": "Clone Git submodule in the repository",
+          "default": false
+        },
+        "clone-subfleet": {
+          "type": "boolean",
+          "description": "Clone a nested fleet if gitfleet.json is found in the repository",
+          "default": false
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}
