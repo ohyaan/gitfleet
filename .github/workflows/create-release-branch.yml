@@ -1,0 +1,95 @@
+name: Create Release Branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  create-release-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name 'GitHub Actions'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Create Release Branch
+        run: |
+          git checkout -b release/${{ github.event.inputs.version }} develop
+          git push -u origin release/${{ github.event.inputs.version }}
+
+      - name: Update Version Numbers
+        run: |
+          # Update version in Python script
+          sed -i "s/__version__ = .*/__version__ = \"${{ github.event.inputs.version }}\"/" gitfleet.py
+          
+          # Update version in README badges
+          sed -i "s/v[0-9]\+\.[0-9]\+\.[0-9]\+/${{ github.event.inputs.version }}/" README.md
+
+      - name: Update CHANGELOG
+        run: |
+          # Ensure CHANGELOG exists
+          touch CHANGELOG.md
+          
+          # Create new CHANGELOG content
+          {
+            echo "# Changelog"
+            echo ""
+            echo "All notable changes to GitFleet will be documented in this file."
+            echo ""
+            echo "The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),"
+            echo "and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)."
+            echo ""
+            echo "## [${{ github.event.inputs.version }}] - $(date +'%Y-%m-%d')"
+            echo ""
+            echo "### Added"
+            echo "- TODO: list new features"
+            echo ""
+            echo "### Changed"
+            echo "- TODO: list changes"
+            echo ""
+            cat CHANGELOG.md | grep -v "# Changelog" || true
+            echo ""
+            echo "[unreleased]: https://github.com/ohyaan/gitfleet/compare/${{ github.event.inputs.version }}...HEAD"
+            echo "[${{ github.event.inputs.version }}]: https://github.com/ohyaan/gitfleet/releases/tag/${{ github.event.inputs.version }}"
+          } > CHANGELOG.new
+          mv CHANGELOG.new CHANGELOG.md
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          title: 'Release ${{ github.event.inputs.version }}'
+          body: |
+            # Release ${{ github.event.inputs.version }}
+            
+            ## Release Checklist
+            - [ ] Version numbers updated
+            - [ ] CHANGELOG updated
+            - [ ] Documentation reviewed
+            - [ ] All tests passing
+            
+            ## Changes
+            - Updated version to ${{ github.event.inputs.version }}
+            - Added CHANGELOG entry
+            - TODO: Add other changes
+          branch: release/${{ github.event.inputs.version }}
+          base: develop
+          labels: release
+
+      - name: Show Next Steps
+        run: |
+          echo "::notice::Release branch created and PR opened. Please:"
+          echo "::notice::1. Review and update the CHANGELOG"
+          echo "::notice::2. Review version number updates"
+          echo "::notice::3. Run tests and verify documentation"
+          echo "::notice::4. Mark the PR as ready for review when complete"
