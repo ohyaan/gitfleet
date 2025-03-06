@@ -16,7 +16,7 @@ import concurrent.futures
 from typing import Dict, Any, Optional, Tuple
 import time
 
-__version__ = "0.0.0"
+__version__ = 'v1.0.0'
 
 # Configure logging
 logging.basicConfig(
