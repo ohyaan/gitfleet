@@ -16,7 +16,6 @@ import concurrent.futures
 from typing import Dict, Any, Optional, Tuple
 import time
 import urllib.request
-import urllib.parse
 import zipfile
 import tarfile
 
@@ -609,7 +608,7 @@ class ConfigLoader:
                             f"Release #{idx}, file #{file_idx} must be a dictionary"
                         )
 
-                    for field in ["name"]:
+                    for field in ["name", "dest"]:
                         if field not in file_config:
                             raise ConfigError(
                                 f"Release #{idx}, file #{file_idx} missing required field: {field}"
@@ -1026,6 +1025,8 @@ class ReleaseAssetManager:
         Raises:
             ConfigError: If URL format is invalid
         """
+        # Remove trailing slash to avoid empty repo name
+        release_url = release_url.rstrip("/")
         # Extract owner/repo from URLs like:
         # https://github.com/owner/repo/releases
         # https://github.com/owner/repo.git
@@ -1157,6 +1158,9 @@ class ReleaseAssetManager:
                         )
                     else:
                         dest_path = dest
+                    # If dest_path is a directory, append asset_name
+                    if os.path.isdir(dest_path) or dest_path.endswith(os.sep):
+                        dest_path = os.path.join(dest_path, asset_name)
                 else:
                     dest_path = os.path.abspath(
                         os.path.join(self.working_dir, asset_name)
