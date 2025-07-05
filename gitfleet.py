@@ -589,7 +589,7 @@ class ConfigLoader:
                     raise ConfigError(f"Release #{idx} must be a dictionary")
 
                 # Check required fields
-                for field in ["release", "tag", "files"]:
+                for field in ["url", "tag", "files"]:
                     if field not in release:
                         raise ConfigError(
                             f"Release #{idx} missing required field: {field}"
