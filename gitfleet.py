@@ -18,6 +18,7 @@ import time
 import urllib.request
 import zipfile
 import tarfile
+from urllib.parse import urlparse
 
 __version__ = "v1.0.0"
 
@@ -1040,26 +1041,23 @@ class ReleaseAssetManager:
         Raises:
             ConfigError: If URL format is invalid
         """
+
         # Remove trailing slash to avoid empty repo name
         release_url = release_url.rstrip("/")
-        # Extract owner/repo from URLs like:
-        # https://github.com/owner/repo/releases
-        # https://github.com/owner/repo.git
-        if release_url.endswith("/releases"):
-            release_url = release_url[:-9]  # Remove /releases
-        if release_url.endswith(".git"):
-            release_url = release_url[:-4]  # Remove .git
-
-        # Parse URL
-        if "github.com" not in release_url:
+        parsed = urlparse(release_url)
+        if "github.com" not in parsed.netloc:
             raise ConfigError(f"Invalid GitHub URL: {release_url}")
-
-        parts = release_url.split("/")
-        if len(parts) < 2:
+        # Remove .git and /releases from the end of the path
+        path = parsed.path
+        if path.endswith("/releases"):
+            path = path[:-9]
+        if path.endswith(".git"):
+            path = path[:-4]
+        # Split and filter empty segments
+        segments = [seg for seg in path.split("/") if seg]
+        if len(segments) < 2:
             raise ConfigError(f"Cannot extract owner/repo from URL: {release_url}")
-
-        owner = parts[-2]
-        repo = parts[-1]
+        owner, repo = segments[-2], segments[-1]
         return owner, repo
 
     def download_asset(
@@ -1167,14 +1165,15 @@ class ReleaseAssetManager:
 
                 # If dest is not specified, use working_dir as default
                 if dest:
+                    is_dir = dest.endswith(os.sep) or dest.endswith("/")
                     if not os.path.isabs(dest):
                         dest_path = os.path.abspath(
                             os.path.join(self.working_dir, dest)
                         )
                     else:
                         dest_path = dest
-                    # If dest_path is a directory, append asset_name
-                    if os.path.isdir(dest_path) or dest_path.endswith(os.sep):
+                    # If dest is a directory (trailing slash in config), append asset_name
+                    if is_dir:
                         dest_path = os.path.join(dest_path, asset_name)
                 else:
                     dest_path = os.path.abspath(
