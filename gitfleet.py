@@ -613,6 +613,21 @@ class ConfigLoader:
                             raise ConfigError(
                                 f"Release #{idx}, file #{file_idx} missing required field: {field}"
                             )
+                    # Type checks for name, dest, extract
+                    if not isinstance(file_config["name"], str):
+                        raise ConfigError(
+                            f"Release #{idx}, file #{file_idx}: 'name' must be a string"
+                        )
+                    if not isinstance(file_config["dest"], str):
+                        raise ConfigError(
+                            f"Release #{idx}, file #{file_idx}: 'dest' must be a string"
+                        )
+                    if "extract" in file_config and not isinstance(
+                        file_config["extract"], bool
+                    ):
+                        raise ConfigError(
+                            f"Release #{idx}, file #{file_idx}: 'extract' must be a boolean if provided"
+                        )
 
     @staticmethod
     def save_config(config: Dict[str, Any], file_path: str):
