@@ -1120,12 +1120,20 @@ class ReleaseAssetManager:
 
             if file_path.endswith((".zip",)):
                 with zipfile.ZipFile(file_path, "r") as zip_ref:
-                    zip_ref.extractall(extract_to)
+                    for member in zip_ref.namelist():
+                        member_path = os.path.abspath(os.path.join(extract_to, member))
+                        if not member_path.startswith(os.path.abspath(extract_to)):
+                            raise Exception(f"Path traversal detected in ZIP archive: {member}")
+                        zip_ref.extract(member, extract_to)
                     logger.info(f"Extracted ZIP {file_path} to {extract_to}")
 
             elif file_path.endswith((".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".tar")):
                 with tarfile.open(file_path, "r:*") as tar_ref:
-                    tar_ref.extractall(extract_to)
+                    for member in tar_ref.getmembers():
+                        member_path = os.path.abspath(os.path.join(extract_to, member.name))
+                        if not member_path.startswith(os.path.abspath(extract_to)):
+                            raise Exception(f"Path traversal detected in TAR archive: {member.name}")
+                        tar_ref.extract(member, extract_to)
                     logger.info(f"Extracted TAR {file_path} to {extract_to}")
 
             else:
