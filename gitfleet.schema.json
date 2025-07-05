@@ -48,7 +48,8 @@
             "items": {
               "type": "object",
               "required": [
-                "name"
+                "name",
+                "dest"
               ],
               "properties": {
                 "name": {

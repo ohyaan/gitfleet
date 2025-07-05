@@ -595,6 +595,11 @@ class ConfigLoader:
                             f"Release #{idx} missing required field: {field}"
                         )
 
+                # Type checks for url, tag, files
+                if not isinstance(release["url"], str):
+                    raise ConfigError(f"Release #{idx}: 'url' must be a string")
+                if not isinstance(release["tag"], str):
+                    raise ConfigError(f"Release #{idx}: 'tag' must be a string")
                 if not isinstance(release["files"], list):
                     raise ConfigError(f"Release #{idx}: 'files' must be a list")
 
@@ -604,7 +609,7 @@ class ConfigLoader:
                             f"Release #{idx}, file #{file_idx} must be a dictionary"
                         )
 
-                    for field in ["name", "dest"]:
+                    for field in ["name"]:
                         if field not in file_config:
                             raise ConfigError(
                                 f"Release #{idx}, file #{file_idx} missing required field: {field}"
