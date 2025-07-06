@@ -1,0 +1,21 @@
+# uv
+.uv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+dist/
+*.egg-info/
+
+# Virtual environments  
+.venv/
+
+# Linux temporary files
+*~
+.directory
+
+# Project specific
+external/
+.fleet_cache/
+gitfleet.yaml
