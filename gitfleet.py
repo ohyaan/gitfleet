@@ -812,12 +812,8 @@ class ConfigLoader:
             raise
         except IOError as e:
             raise ConfigError(f"Failed to read configuration file: {e}")
-        except Exception as e:
-            # Handle yaml.YAMLError and other YAML-related errors
-            if file_ext in (".yaml", ".yml"):
-                raise ConfigError(f"Failed to parse YAML configuration file: {e}")
-            else:
-                raise ConfigError(f"Failed to parse configuration file: {e}")
+        except yaml.YAMLError as e:
+            raise ConfigError(f"Failed to parse YAML configuration file: {e}")
 
         # Validate configuration
         ConfigLoader.validate_config(config)
@@ -1260,15 +1256,19 @@ def main():
             max_workers=args.parallel,
         )
 
-        fleet_manager.process()
+        success = fleet_manager.process()
 
         # Handle anchoring if requested
         if args.anchor is not None:
             output_path = args.anchor or None
             fleet_manager.anchor(output_path)
 
-        logger.info("All operations completed successfully!")
-        return 0
+        if success:
+            logger.info("All operations completed successfully!")
+            return 0
+        else:
+            logger.error("Operation failed!")
+            return 1
 
     except ConfigError as e:
         logger.error(f"Configuration error: {e}")
