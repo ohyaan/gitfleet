@@ -1260,15 +1260,19 @@ def main():
             max_workers=args.parallel,
         )
 
-        fleet_manager.process()
+        success = fleet_manager.process()
 
         # Handle anchoring if requested
         if args.anchor is not None:
             output_path = args.anchor or None
             fleet_manager.anchor(output_path)
 
-        logger.info("All operations completed successfully!")
-        return 0
+        if success:
+            logger.info("All operations completed successfully!")
+            return 0
+        else:
+            logger.error("Operation failed!")
+            return 1
 
     except ConfigError as e:
         logger.error(f"Configuration error: {e}")
