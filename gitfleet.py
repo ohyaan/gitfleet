@@ -812,12 +812,8 @@ class ConfigLoader:
             raise
         except IOError as e:
             raise ConfigError(f"Failed to read configuration file: {e}")
-        except Exception as e:
-            # Handle yaml.YAMLError and other YAML-related errors
-            if file_ext in (".yaml", ".yml"):
-                raise ConfigError(f"Failed to parse YAML configuration file: {e}")
-            else:
-                raise ConfigError(f"Failed to parse configuration file: {e}")
+        except yaml.YAMLError as e:
+            raise ConfigError(f"Failed to parse YAML configuration file: {e}")
 
         # Validate configuration
         ConfigLoader.validate_config(config)
