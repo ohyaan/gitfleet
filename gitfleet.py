@@ -10,13 +10,17 @@ import re
 import argparse
 from argparse import RawTextHelpFormatter
 import json
-import yaml
 import logging
 import concurrent.futures
 from typing import Dict, Any, Optional, Tuple
 import time
+import urllib.request
+import urllib.parse
+import urllib.error
+import zipfile
+import tarfile
 
-__version__ = "v1.0.0"
+__version__ = 'v1.1.0'
 
 # Configure logging
 logging.basicConfig(
@@ -44,6 +48,12 @@ class GitError(Exception):
 
 class ConfigError(Exception):
     """Exception for configuration issues"""
+
+    pass
+
+
+class ReleaseError(Exception):
+    """Exception for GitHub release operations"""
 
     pass
 
@@ -251,13 +261,13 @@ class Repository:
 
             elif self.revision_type == RevisionType.TAGS:
                 target_sha1 = GitRunner.run_command(
-                    f'git rev-list -n 1 {self.config["revision"]}', cwd=self.dest_path
+                    f"git rev-list -n 1 {self.config['revision']}", cwd=self.dest_path
                 )
                 return current_sha1 == target_sha1
 
             elif self.revision_type == RevisionType.HEADS:
                 target_sha1 = GitRunner.run_command(
-                    f'git ls-remote origin {self.config["revision"]}',
+                    f"git ls-remote origin {self.config['revision']}",
                     cwd=self.dest_path,
                 ).split()[0]
                 return current_sha1 == target_sha1
@@ -498,6 +508,267 @@ class Repository:
             return False
 
 
+class ReleaseAsset:
+    """Represents a GitHub release asset with download operations"""
+
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        working_dir: str,
+        dry_run: bool = False,
+    ):
+        """Initialize release asset
+
+        Args:
+            config: Asset configuration
+            working_dir: Base directory for relative paths
+            dry_run: If True, don't execute commands
+        """
+        self.config = config
+        self.working_dir = working_dir
+        self.dry_run = dry_run
+        self.setup_paths()
+
+    def setup_paths(self):
+        """Setup asset paths"""
+        self.name = self.config["name"]
+
+        # Resolve destination path (dest is required)
+        dest = self.config["dest"]
+        if not os.path.isabs(dest):
+            self.dest_path = os.path.abspath(os.path.join(self.working_dir, dest))
+        else:
+            self.dest_path = dest
+
+        self.file_path = os.path.join(self.dest_path, self.name)
+
+    def ensure_dest_directory(self):
+        """Ensure destination directory exists"""
+        if not self.dry_run:
+            try:
+                os.makedirs(self.dest_path, exist_ok=True)
+            except OSError as e:
+                raise ReleaseError(f"Failed to create directory {self.dest_path}: {e}")
+
+    def download(self, download_url: str) -> bool:
+        """Download asset from URL
+
+        Args:
+            download_url: URL to download from
+
+        Returns:
+            True if successful
+        """
+        logger.info(f"Downloading {self.name} to {self.dest_path}")
+
+        if self.dry_run:
+            logger.info(f"[DRY RUN] Would download {download_url} to {self.file_path}")
+            return True
+
+        try:
+            self.ensure_dest_directory()
+
+            # Download with progress
+            with urllib.request.urlopen(download_url) as response:
+                total_size = int(response.headers.get("Content-Length", 0))
+
+                with open(self.file_path, "wb") as f:
+                    downloaded = 0
+                    chunk_size = 8192
+
+                    while True:
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+
+                        if total_size > 0:
+                            progress = (downloaded / total_size) * 100
+                            logger.debug(
+                                f"Downloaded {downloaded}/{total_size} bytes ({progress:.1f}%)"
+                            )
+
+            logger.info(f"Successfully downloaded {self.name}")
+            return True
+
+        except (urllib.error.URLError, IOError) as e:
+            logger.error(f"Failed to download {self.name}: {e}")
+            return False
+
+    def extract(self) -> bool:
+        """Extract archive if specified
+
+        Returns:
+            True if successful or no extraction needed
+        """
+        if not self.config.get("extract", True):
+            return True
+
+        if self.dry_run:
+            logger.info(f"[DRY RUN] Would extract {self.file_path}")
+            return True
+
+        if not os.path.exists(self.file_path):
+            logger.error(f"Cannot extract - file not found: {self.file_path}")
+            return False
+
+        try:
+            if self.name.endswith(".zip"):
+                logger.info(f"Extracting ZIP: {self.name}")
+                with zipfile.ZipFile(self.file_path, "r") as zip_file:
+                    zip_file.extractall(self.dest_path)
+
+            elif self.name.endswith((".tar.gz", ".tgz")):
+                logger.info(f"Extracting TAR.GZ: {self.name}")
+                with tarfile.open(self.file_path, "r:gz") as tar_file:
+                    tar_file.extractall(self.dest_path)
+
+            elif self.name.endswith(".tar"):
+                logger.info(f"Extracting TAR: {self.name}")
+                with tarfile.open(self.file_path, "r") as tar_file:
+                    tar_file.extractall(self.dest_path)
+
+            else:
+                logger.info(f"No extraction needed for {self.name}")
+                return True
+
+            logger.info(f"Successfully extracted {self.name}")
+            return True
+
+        except (zipfile.BadZipFile, tarfile.TarError, IOError) as e:
+            logger.error(f"Failed to extract {self.name}: {e}")
+            return False
+
+
+class Release:
+    """Represents a GitHub release with asset operations"""
+
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        working_dir: str,
+        dry_run: bool = False,
+    ):
+        """Initialize release
+
+        Args:
+            config: Release configuration
+            working_dir: Base directory for relative paths
+            dry_run: If True, don't execute commands
+        """
+        self.config = config
+        self.working_dir = working_dir
+        self.dry_run = dry_run
+        self.setup_release_info()
+        self.setup_assets()
+
+    def setup_release_info(self):
+        """Setup release information"""
+        self.url = self.config["url"]
+        self.tag = self.config["tag"]
+
+        # Parse GitHub URL to get owner and repo
+        if self.url.startswith("https://github.com/"):
+            parts = self.url.replace("https://github.com/", "").strip("/").split("/")
+            if len(parts) >= 2:
+                self.owner = parts[0]
+                self.repo = parts[1]
+                self.name = f"{self.owner}/{self.repo}"
+            else:
+                raise ReleaseError(f"Invalid GitHub URL format: {self.url}")
+        else:
+            raise ReleaseError(f"Only GitHub URLs are supported: {self.url}")
+
+    def setup_assets(self):
+        """Setup asset objects"""
+        self.assets = []
+        for asset_config in self.config.get("assets", []):
+            self.assets.append(
+                ReleaseAsset(asset_config, self.working_dir, self.dry_run)
+            )
+
+    def fetch_release_info(self) -> Dict[str, Any]:
+        """Fetch release information from GitHub API
+
+        Returns:
+            Release information dictionary
+
+        Raises:
+            ReleaseError: If API request fails
+        """
+        api_url = f"https://api.github.com/repos/{self.owner}/{self.repo}/releases/tags/{self.tag}"
+
+        if self.dry_run:
+            logger.info(f"[DRY RUN] Would fetch release info from {api_url}")
+            return {"assets": []}
+
+        try:
+            logger.debug(f"Fetching release info from {api_url}")
+            with urllib.request.urlopen(api_url) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            return data
+        except (urllib.error.URLError, json.JSONDecodeError) as e:
+            raise ReleaseError(
+                f"Failed to fetch release info for {self.name} tag {self.tag}: {e}"
+            )
+
+    def find_asset_download_url(
+        self, asset_name: str, release_data: Dict[str, Any]
+    ) -> Optional[str]:
+        """Find download URL for asset
+
+        Args:
+            asset_name: Name of asset to find
+            release_data: Release data from GitHub API
+
+        Returns:
+            Download URL if found, None otherwise
+        """
+        for asset in release_data.get("assets", []):
+            if asset.get("name") == asset_name:
+                return asset.get("browser_download_url")
+        return None
+
+    def sync(self) -> bool:
+        """Synchronize release assets
+
+        Returns:
+            True if successful
+        """
+        logger.info(f"Processing release: {self.name} tag {self.tag}")
+
+        try:
+            # Fetch release information
+            release_data = self.fetch_release_info()
+
+            # Process each asset
+            success_count = 0
+            for asset in self.assets:
+                download_url = self.find_asset_download_url(asset.name, release_data)
+
+                if not download_url:
+                    logger.error(f"Asset not found in release: {asset.name}")
+                    continue
+
+                # Download and extract asset
+                if asset.download(download_url) and asset.extract():
+                    success_count += 1
+                else:
+                    logger.error(f"Failed to process asset: {asset.name}")
+
+            total_assets = len(self.assets)
+            logger.info(
+                f"Processed {success_count}/{total_assets} assets for {self.name}"
+            )
+
+            return success_count == total_assets
+
+        except ReleaseError as e:
+            logger.error(f"Failed to sync release {self.name}: {e}")
+            return False
+
+
 class ConfigLoader:
     """Handles loading and validating configuration files"""
 
@@ -524,13 +795,25 @@ class ConfigLoader:
                 if file_ext == ".json":
                     config = json.load(f)
                 elif file_ext in (".yaml", ".yml"):
+                    try:
+                        import yaml
+                    except ImportError:
+                        raise ConfigError(
+                            "YAML support requires the 'pyyaml' package. "
+                            "Install it with: pip install pyyaml"
+                        )
                     config = yaml.safe_load(f)
                 else:
                     raise ConfigError(f"Unsupported configuration format: {file_ext}")
-        except (json.JSONDecodeError, yaml.YAMLError) as e:
-            raise ConfigError(f"Failed to parse configuration file: {e}")
+        except json.JSONDecodeError as e:
+            raise ConfigError(f"Failed to parse JSON configuration file: {e}")
+        except ImportError:
+            # Re-raise ImportError from yaml import
+            raise
         except IOError as e:
             raise ConfigError(f"Failed to read configuration file: {e}")
+        except yaml.YAMLError as e:
+            raise ConfigError(f"Failed to parse YAML configuration file: {e}")
 
         # Validate configuration
         ConfigLoader.validate_config(config)
@@ -550,30 +833,68 @@ class ConfigLoader:
         if not isinstance(config, dict):
             raise ConfigError("Configuration must be a dictionary")
 
-        if "repositories" not in config:
-            raise ConfigError("Configuration must contain 'repositories' key")
+        # Validate repositories section
+        if "repositories" in config:
+            if not isinstance(config["repositories"], list):
+                raise ConfigError("'repositories' must be a list")
 
-        if not isinstance(config["repositories"], list):
-            raise ConfigError("'repositories' must be a list")
+            for idx, repo in enumerate(config["repositories"]):
+                if not isinstance(repo, dict):
+                    raise ConfigError(f"Repository #{idx} must be a dictionary")
 
-        for idx, repo in enumerate(config["repositories"]):
-            if not isinstance(repo, dict):
-                raise ConfigError(f"Repository #{idx} must be a dictionary")
+                # Check required fields
+                for field in ["src", "dest", "revision"]:
+                    if field not in repo:
+                        raise ConfigError(
+                            f"Repository #{idx} missing required field: {field}"
+                        )
 
-            # Check required fields
-            for field in ["src", "dest", "revision"]:
-                if field not in repo:
+                # Validate that clone-subfleet is boolean if present
+                if "clone-subfleet" in repo and not isinstance(
+                    repo["clone-subfleet"], bool
+                ):
                     raise ConfigError(
-                        f"Repository #{idx} missing required field: {field}"
+                        f"Repository #{idx}: 'clone-subfleet' must be a boolean value"
                     )
 
-            # Validate that clone-subfleet is boolean if present
-            if "clone-subfleet" in repo and not isinstance(
-                repo["clone-subfleet"], bool
-            ):
-                raise ConfigError(
-                    f"Repository #{idx}: 'clone-subfleet' must be a boolean value"
-                )
+        # Validate releases section
+        if "releases" in config:
+            if not isinstance(config["releases"], list):
+                raise ConfigError("'releases' must be a list")
+
+            for idx, release in enumerate(config["releases"]):
+                if not isinstance(release, dict):
+                    raise ConfigError(f"Release #{idx} must be a dictionary")
+
+                # Check required fields
+                for field in ["url", "tag", "assets"]:
+                    if field not in release:
+                        raise ConfigError(
+                            f"Release #{idx} missing required field: {field}"
+                        )
+
+                # Validate assets
+                if not isinstance(release["assets"], list):
+                    raise ConfigError(f"Release #{idx}: 'assets' must be a list")
+
+                for asset_idx, asset in enumerate(release["assets"]):
+                    if not isinstance(asset, dict):
+                        raise ConfigError(
+                            f"Release #{idx} asset #{asset_idx} must be a dictionary"
+                        )
+
+                    # Check required fields for assets
+                    for field in ["name", "dest"]:
+                        if field not in asset:
+                            raise ConfigError(
+                                f"Release #{idx} asset #{asset_idx} missing required field: '{field}'"
+                            )
+
+        # Ensure at least one of repositories or releases exists
+        if "repositories" not in config and "releases" not in config:
+            raise ConfigError(
+                "Configuration must contain 'repositories' or 'releases' section"
+            )
 
     @staticmethod
     def save_config(config: Dict[str, Any], file_path: str):
@@ -593,6 +914,13 @@ class ConfigLoader:
                 if file_ext == ".json":
                     json.dump(config, f, indent=4)
                 elif file_ext in (".yaml", ".yml"):
+                    try:
+                        import yaml
+                    except ImportError:
+                        raise ConfigError(
+                            "YAML support requires the 'pyyaml' package. "
+                            "Install it with: pip install pyyaml"
+                        )
                     yaml.dump(config, f, default_flow_style=False)
                 else:
                     raise ConfigError(f"Unsupported configuration format: {file_ext}")
@@ -642,6 +970,7 @@ class FleetManager:
 
         self.config = None
         self.repositories = []
+        self.releases = []
 
     def check_schema_version(self):
         """Check if the schema version is supported
@@ -649,6 +978,9 @@ class FleetManager:
         Raises:
             ConfigError: If schema version is missing or not supported
         """
+        if self.config is None:
+            raise ConfigError("Configuration not loaded.")
+
         schema_version = self.config.get("schemaVersion")
         if not schema_version:
             raise ConfigError("Schema version is required.")
@@ -679,30 +1011,57 @@ class FleetManager:
                 )
             )
 
-        logger.info(f"Loaded {len(self.repositories)} repositories from configuration")
+        # Create Release objects
+        self.releases = []
+        for release_config in self.config.get("releases", []):
+            self.releases.append(
+                Release(
+                    release_config,
+                    self.base_dir,  # Use base_dir for relative paths
+                    self.dry_run,
+                )
+            )
+
+        logger.info(
+            f"Loaded {len(self.repositories)} repositories and {len(self.releases)} releases from configuration"
+        )
 
     def process_sequential(self):
-        """Process repositories sequentially"""
+        """Process repositories and releases sequentially"""
         results = []
         for repo in self.repositories:
             results.append(repo.sync())
+        for release in self.releases:
+            results.append(release.sync())
         return results
 
     def process_parallel(self):
-        """Process repositories in parallel"""
+        """Process repositories and releases in parallel"""
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=self.max_workers
         ) as executor:
-            futures = {executor.submit(repo.sync): repo for repo in self.repositories}
+            futures = {}
+
+            # Submit repository tasks
+            for repo in self.repositories:
+                futures[executor.submit(repo.sync)] = ("repo", repo)
+
+            # Submit release tasks
+            for release in self.releases:
+                futures[executor.submit(release.sync)] = ("release", release)
+
             results = []
 
             for future in concurrent.futures.as_completed(futures):
-                repo = futures[future]
+                item_type, item = futures[future]
                 try:
                     result = future.result()
                     results.append(result)
                 except Exception as e:
-                    logger.error(f"Error processing {repo.name}: {e}")
+                    if item_type == "repo":
+                        logger.error(f"Error processing repository {item.name}: {e}")
+                    else:
+                        logger.error(f"Error processing release {item.name}: {e}")
                     results.append(False)
 
             return results
@@ -716,9 +1075,12 @@ class FleetManager:
         if not self.config:
             self.load()
 
-        logger.info(f"Processing {len(self.repositories)} repositories")
+        logger.info(
+            f"Processing {len(self.repositories)} repositories and {len(self.releases)} releases"
+        )
 
-        if self.max_workers > 1 and len(self.repositories) > 1:
+        total_items = len(self.repositories) + len(self.releases)
+        if self.max_workers > 1 and total_items > 1:
             logger.info(f"Using parallel processing with {self.max_workers} workers")
             results = self.process_parallel()
         else:
@@ -727,7 +1089,7 @@ class FleetManager:
 
         success_count = sum(1 for r in results if r)
         logger.info(
-            f"Processed {len(results)} repositories: "
+            f"Processed {len(results)} items: "
             f"{success_count} succeeded, {len(results) - success_count} failed"
         )
 
@@ -742,6 +1104,10 @@ class FleetManager:
         if not self.config:
             self.load()
 
+        # Type guard to ensure config is not None
+        if self.config is None:
+            raise ConfigError("Failed to load configuration.")
+
         logger.info("Anchoring repository revisions to current commit SHAs")
 
         # Update repository configurations with current SHAs
@@ -749,7 +1115,8 @@ class FleetManager:
             current_sha1 = repo.get_current_sha1()
             if current_sha1:
                 # Find and update corresponding repository in configuration
-                for repo_config in self.config["repositories"]:
+                repositories = self.config.get("repositories", [])
+                for repo_config in repositories:
                     if (
                         repo_config["src"] == repo.source_url
                         and repo_config["dest"] == repo.config["dest"]
@@ -782,7 +1149,6 @@ class FleetManager:
         Raises:
             ConfigError: If no configuration file is found
         """
-        # Generated by Copilot
         for config_name in FleetManager.FLEET_CONFIG_NAMES:
             config_path = os.path.join(working_dir, config_name)
             if os.path.exists(config_path):
@@ -890,15 +1256,19 @@ def main():
             max_workers=args.parallel,
         )
 
-        fleet_manager.process()
+        success = fleet_manager.process()
 
         # Handle anchoring if requested
         if args.anchor is not None:
             output_path = args.anchor or None
             fleet_manager.anchor(output_path)
 
-        logger.info("All operations completed successfully!")
-        return 0
+        if success:
+            logger.info("All operations completed successfully!")
+            return 0
+        else:
+            logger.error("Operation failed!")
+            return 1
 
     except ConfigError as e:
         logger.error(f"Configuration error: {e}")
