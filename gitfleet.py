@@ -635,9 +635,6 @@ class ReleaseAsset:
             logger.info(f"Successfully downloaded {self.name}")
             return True
 
-        except (urllib.error.URLError, IOError) as e:
-            logger.error(f"Failed to download {self.name}: {e}")
-            return False
         except Exception as e:
             logger.error(f"Failed to download {self.name}: {e}")
             return False
