@@ -140,6 +140,45 @@ Each repository entry supports the following properties:
 | `shallow-clone` | Enable shallow clone | No | `false` |
 | `clone-submodule` | Clone submodule | No | `false` |
 | `clone-subfleet` | Process nested fleet file | No | `false` |
+| `copy` | Selective file/directory copy list (see below) | No | - |
+
+#### Selective File/Directory Copy (`copy.repoPath`)
+
+You can optionally specify a `copy` section for each repository to copy only specific files or directories from the cloned repository to arbitrary destinations. The full repository is always cloned to the `dest` directory (which is retained as a backup), but you can additionally copy selected files or directories elsewhere.
+
+Example:
+
+```yaml
+repositories:
+  - src: https://github.com/example/repo.git
+    dest: external/repo1234
+    revision: refs/heads/main
+    copy:
+      - repoPath: file1.txt           # Relative path inside the repository
+        dest: src/file1.txt           # Destination path (relative to fleet config or absolute)
+      - repoPath: src/dir2/           # Directory also supported
+        dest: src/b/selected/dir2/
+```
+
+- `repoPath`: Path to the file or directory inside the repository (relative to the repository root).
+- `dest`: Destination path to copy to (relative to the fleet configuration file or absolute).
+
+If `copy` is omitted, the repository is only cloned to `dest` as before.
+
+Behavior:
+- The repository is always cloned to the specified `dest` directory.
+- If `copy` is specified, only the listed files/directories are copied from the repository to the specified destinations.
+- The `dest` directory is always retained as a backup of the full repository, regardless of whether `copy` is used.
+
+Each `copy` entry supports:
+
+| Property   | Description                                         | Required | Default |
+|------------|-----------------------------------------------------|----------|---------|
+| `repoPath` | Path to file or directory in the repository         | Yes      | -       |
+| `dest`     | Destination path to copy to (relative/absolute)     | Yes      | -       |
+
+---
+
 
 #### Revision Formats
 

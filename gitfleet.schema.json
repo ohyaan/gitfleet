@@ -109,8 +109,30 @@
         },
         "clone-subfleet": {
           "type": "boolean",
-          "description": "Clone a nested fleet if gitfleet.json is found in the repository",
+          "description": "Clone a nested fleet if gitfleet.yaml or gitfleet.json is found in the repository",
           "default": false
+        },
+        "copy": {
+          "type": "array",
+          "description": "Selective file/directory copy list. Each entry specifies a file or directory in the repository to copy and its destination.",
+          "items": {
+            "type": "object",
+            "required": [
+              "repoPath",
+              "dest"
+            ],
+            "properties": {
+              "repoPath": {
+                "type": "string",
+                "description": "Path to file or directory in the repository (relative to repository root)"
+              },
+              "dest": {
+                "type": "string",
+                "description": "Destination path to copy to (relative to the fleet configuration file or absolute)"
+              }
+            },
+            "additionalProperties": false
+          }
         }
       }
     }
