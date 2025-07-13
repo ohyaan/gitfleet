@@ -638,6 +638,9 @@ class ReleaseAsset:
         except (urllib.error.URLError, IOError) as e:
             logger.error(f"Failed to download {self.name}: {e}")
             return False
+        except Exception as e:
+            logger.error(f"Failed to download {self.name}: {e}")
+            return False
 
     def extract(self) -> bool:
         """Extract archive if specified
@@ -910,6 +913,15 @@ class ConfigLoader:
                 ):
                     raise ConfigError(
                         f"Repository #{idx}: 'shallow-clone' must be a boolean value"
+                    )
+                # Validate that copy is a list if present
+                if (
+                    "copy" in repo
+                    and repo["copy"] is not None
+                    and not isinstance(repo["copy"], list)
+                ):
+                    raise ConfigError(
+                        f"Repository #{idx}: 'copy' must be a list if present"
                     )
 
         # Validate releases section

@@ -620,3 +620,48 @@ def test_dry_run_filesystem_integrity(tmp_path):
     repo.perform_copy_operations()
     after = {p.name: p.stat().st_mtime for p in tmp_path.iterdir()}
     assert before == after
+
+
+def test_config_loader_copy_field_type(tmp_path):
+    # copyがリスト以外（文字列）の場合は例外
+    config = {
+        "schemaVersion": "v1",
+        "repositories": [
+            {
+                "src": "https://github.com/example/repo.git",
+                "dest": "repo",
+                "revision": "refs/heads/main",
+                "copy": "README.md",
+            }
+        ],
+    }
+    config_path = tmp_path / "fleet.json"
+    with open(config_path, "w") as f:
+        import json
+
+        json.dump(config, f)
+    import pytest
+
+    with pytest.raises(Exception) as e:
+        from gitfleet import ConfigLoader
+
+        ConfigLoader.load_config(str(config_path))
+    assert "'copy' must be a list" in str(e.value)
+
+    # copyがNoneは許容される
+    config["repositories"][0]["copy"] = None
+    with open(config_path, "w") as f:
+        import json
+
+        json.dump(config, f)
+    loaded = ConfigLoader.load_config(str(config_path))
+    assert loaded["repositories"][0]["copy"] is None
+
+    # copyがリストは許容される
+    config["repositories"][0]["copy"] = []
+    with open(config_path, "w") as f:
+        import json
+
+        json.dump(config, f)
+    loaded = ConfigLoader.load_config(str(config_path))
+    assert loaded["repositories"][0]["copy"] == []
