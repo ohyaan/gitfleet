@@ -35,9 +35,10 @@ jobs:
           git commit -m "Update version to ${{ github.event.inputs.version }}"
           git push origin develop
           
-          # Merge to main
+          # Merge to main with proper history
           git checkout main
-          git merge develop --no-ff -m "Release ${{ github.event.inputs.version }}"
+          git pull origin main          # Ensure main is up to date
+          git merge --no-ff develop -m "Merge develop: Release ${{ github.event.inputs.version }} - Add release asset support and fix exit codes"
           git push origin main
 
       - name: Create Release

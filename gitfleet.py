@@ -20,7 +20,7 @@ import urllib.error
 import zipfile
 import tarfile
 
-__version__ = 'v1.1.0'
+__version__ = "v1.2.0"
 
 # Configure logging
 logging.basicConfig(
@@ -460,6 +460,46 @@ class Repository:
             logger.warning(f"Failed to get current SHA1 for {self.name}: {e}")
             return ""
 
+    def perform_copy_operations(self):
+        """Perform selective file/directory copy operations as specified in the 'copy' config."""
+        copy_list = self.config.get("copy")
+        if not copy_list:
+            return
+        for entry in copy_list:
+            repo_path = entry.get("repoPath")
+            dest_path = entry.get("dest")
+            if not repo_path or not dest_path:
+                logger.warning(f"copy entry missing required fields: {entry}")
+                continue
+            abs_repo_path = os.path.join(self.dest_path, repo_path)
+            # If dest_path is not absolute, resolve relative to working_dir
+            if not os.path.isabs(dest_path):
+                abs_dest_path = os.path.abspath(
+                    os.path.join(self.working_dir, dest_path)
+                )
+            else:
+                abs_dest_path = dest_path
+            if self.dry_run:
+                logger.info(f"[DRY RUN] Would copy {abs_repo_path} to {abs_dest_path}")
+                continue
+            if not os.path.exists(abs_repo_path):
+                logger.warning(f"Source path does not exist: {abs_repo_path}")
+                continue
+            try:
+                if os.path.isdir(abs_repo_path):
+                    if os.path.exists(abs_dest_path):
+                        if os.path.isdir(abs_dest_path):
+                            shutil.rmtree(abs_dest_path)
+                        else:
+                            os.remove(abs_dest_path)
+                    shutil.copytree(abs_repo_path, abs_dest_path)
+                else:
+                    os.makedirs(os.path.dirname(abs_dest_path), exist_ok=True)
+                    shutil.copy2(abs_repo_path, abs_dest_path)
+                logger.info(f"Copied {abs_repo_path} to {abs_dest_path}")
+            except Exception as e:
+                logger.error(f"Failed to copy {abs_repo_path} to {abs_dest_path}: {e}")
+
     def sync(self) -> bool:
         """Synchronize repository
 
@@ -501,6 +541,9 @@ class Repository:
 
             # Process nested fleet if needed
             self.process_subfleet()
+
+            # Perform selective copy if specified
+            self.perform_copy_operations()
 
             return True
         except GitError as e:
@@ -592,7 +635,7 @@ class ReleaseAsset:
             logger.info(f"Successfully downloaded {self.name}")
             return True
 
-        except (urllib.error.URLError, IOError) as e:
+        except Exception as e:
             logger.error(f"Failed to download {self.name}: {e}")
             return False
 
@@ -849,12 +892,33 @@ class ConfigLoader:
                             f"Repository #{idx} missing required field: {field}"
                         )
 
-                # Validate that clone-subfleet is boolean if present
+                # Validate that clone-submodule is boolean if present
+                if "clone-submodule" in repo and not isinstance(
+                    repo["clone-submodule"], bool
+                ):
+                    raise ConfigError(
+                        f"Repository #{idx}: 'clone-submodule' must be a boolean value"
+                    )
                 if "clone-subfleet" in repo and not isinstance(
                     repo["clone-subfleet"], bool
                 ):
                     raise ConfigError(
                         f"Repository #{idx}: 'clone-subfleet' must be a boolean value"
+                    )
+                if "shallow-clone" in repo and not isinstance(
+                    repo["shallow-clone"], bool
+                ):
+                    raise ConfigError(
+                        f"Repository #{idx}: 'shallow-clone' must be a boolean value"
+                    )
+                # Validate that copy is a list if present
+                if (
+                    "copy" in repo
+                    and repo["copy"] is not None
+                    and not isinstance(repo["copy"], list)
+                ):
+                    raise ConfigError(
+                        f"Repository #{idx}: 'copy' must be a list if present"
                     )
 
         # Validate releases section
