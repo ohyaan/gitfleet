@@ -488,7 +488,10 @@ class Repository:
             try:
                 if os.path.isdir(abs_repo_path):
                     if os.path.exists(abs_dest_path):
-                        shutil.rmtree(abs_dest_path)
+                        if os.path.isdir(abs_dest_path):
+                            shutil.rmtree(abs_dest_path)
+                        else:
+                            os.remove(abs_dest_path)
                     shutil.copytree(abs_repo_path, abs_dest_path)
                 else:
                     os.makedirs(os.path.dirname(abs_dest_path), exist_ok=True)
