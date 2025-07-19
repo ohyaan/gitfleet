@@ -18,7 +18,8 @@ jobs:
         with:
           fetch-depth: 0
           ref: develop
-          
+          token: ${{ secrets.GH_PAT }}
+      
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -32,22 +33,23 @@ jobs:
           # Update version in develop
           sed -i "s/^__version__ = .*/__version__ = '${{ github.event.inputs.version }}'/" gitfleet.py
           git add gitfleet.py
-          git commit -m "Update version to ${{ github.event.inputs.version }}"
-          git push origin develop
+      
+      - name: Commit, Push and Merge to Main
+        run: |
+          # Check for changes and commit if needed
+          if ! git diff --staged --quiet; then
+            git commit -m "Update version to ${{ github.event.inputs.version }}"
+            git push origin develop
+          else
+            echo "No changes to commit"
+          fi
           
           # Merge to main with proper history
           git checkout main
-          git pull origin main          # Ensure main is up to date
-          git merge --no-ff develop -m "Merge develop: Release ${{ github.event.inputs.version }} - Add release asset support and fix exit codes"
+          git pull origin main
+          git merge --no-ff develop -m "Merge develop: Release ${{ github.event.inputs.version }}"
+          
+          # Create and push tag
+          git tag ${{ github.event.inputs.version }}
           git push origin main
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ github.event.inputs.version }}
-          name: Release ${{ github.event.inputs.version }}
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          git push origin ${{ github.event.inputs.version }}
