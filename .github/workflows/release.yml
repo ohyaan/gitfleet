@@ -33,7 +33,8 @@ jobs:
           # Update version in develop
           sed -i "s/^__version__ = .*/__version__ = '${{ github.event.inputs.version }}'/" gitfleet.py
           git add gitfleet.py
-          # Check for changes
+      
+      # Check for changes
       - name: Check for Changes
         id: check_changes
         run: |
