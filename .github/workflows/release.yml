@@ -38,18 +38,10 @@ jobs:
         id: check_changes
         run: |
           if git diff --staged --quiet; then
-            echo "changes_detected=false" >> $GITHUB_OUTPUT
+            echo "changes_detected=false" | tee -a $GITHUB_OUTPUT >> $GITHUB_ENV
           else
-            echo "changes_detected=true" >> $GITHUB_OUTPUT
+            echo "changes_detected=true" | tee -a $GITHUB_OUTPUT >> $GITHUB_ENV
           fi
-      - id: check_changes_env
-        name: Check for Changes (Environment)
-        run: |
-          if git diff --staged --quiet; then
-            echo "changes_detected=false" >> $GITHUB_ENV
-          else
-            echo "changes_detected=true" >> $GITHUB_ENV
-          
       - name: Commit Changes
         if: env.changes_detected == 'true'
         run: |
