@@ -51,7 +51,6 @@ jobs:
             echo "changes_detected=false" >> $GITHUB_ENV
           else
             echo "changes_detected=true" >> $GITHUB_ENV
-# Removed the unnecessary env block
           
       - name: Commit Changes
         if: env.changes_detected == 'true'
