@@ -34,34 +34,22 @@ jobs:
           sed -i "s/^__version__ = .*/__version__ = '${{ github.event.inputs.version }}'/" gitfleet.py
           git add gitfleet.py
       
-      # Check for changes
-      - name: Check for Changes
-        id: check_changes
+      - name: Commit, Push and Merge to Main
         run: |
-          if git diff --staged --quiet; then
-            echo "changes_detected=false" >> $GITHUB_OUTPUT
+          # Check for changes and commit if needed
+          if ! git diff --staged --quiet; then
+            git commit -m "Update version to ${{ github.event.inputs.version }}"
+            git push origin develop
           else
-            echo "changes_detected=true" >> $GITHUB_OUTPUT
+            echo "No changes to commit"
           fi
-      - name: Commit Changes
-        if: steps.check_changes.outputs.changes_detected == 'true'
-        run: |
-          git commit -m "Update version to ${{ github.event.inputs.version }}"
-          git push origin develop
           
           # Merge to main with proper history
           git checkout main
-          git pull origin main          # Ensure main is up to date
-          git merge --no-ff develop -m "Merge develop: Release ${{ github.event.inputs.version }} - Add release asset support and fix exit codes"
+          git pull origin main
+          git merge --no-ff develop -m "Merge develop: Release ${{ github.event.inputs.version }}"
+          
+          # Create and push tag
+          git tag ${{ github.event.inputs.version }}
           git push origin main
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ github.event.inputs.version }}
-          name: Release ${{ github.event.inputs.version }}
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          git push origin ${{ github.event.inputs.version }}
