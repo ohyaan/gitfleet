@@ -39,11 +39,10 @@ jobs:
         id: check_changes
         run: |
           if git diff --staged --quiet; then
-            echo "changes_detected=false" >> $GITHUB_OUTPUT
             echo "changes_detected=false" >> $GITHUB_ENV
           else
-            echo "changes_detected=true" >> $GITHUB_OUTPUT
             echo "changes_detected=true" >> $GITHUB_ENV
+          fi
           fi
       - name: Commit Changes
         if: env.changes_detected == 'true'
