@@ -36,8 +36,18 @@ jobs:
           # Check for changes
           git diff --staged --quiet
           
+      - id: check_changes
+        name: Check for Changes
+        run: |
+          if git diff --staged --quiet; then
+            echo "changes_detected=false" >> $GITHUB_ENV
+          else
+            echo "changes_detected=true" >> $GITHUB_ENV
+        env:
+          changes_detected: ${{ env.changes_detected }}
+          
       - name: Commit Changes
-        if: ${{ !steps.check_changes.outputs.changes_detected }}
+        if: ${{ steps.check_changes.outputs.changes_detected == 'true' }}
         run: |
           git commit -m "Update version to ${{ github.event.inputs.version }}"
           git push origin develop
