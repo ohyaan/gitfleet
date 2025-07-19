@@ -49,8 +49,7 @@ jobs:
             echo "changes_detected=false" >> $GITHUB_ENV
           else
             echo "changes_detected=true" >> $GITHUB_ENV;
-        env:
-          changes_detected: ${{ env.changes_detected }}
+# Removed the unnecessary env block
           
       - name: Commit Changes
         if: ${{ steps.check_changes.outputs.changes_detected == 'true' }}
