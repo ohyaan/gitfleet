@@ -40,7 +40,7 @@ jobs:
         id: check_changes
         run: |
           git diff --staged --quiet
-          echo "::set-output name=changes_detected::false"
+          echo "changes_detected=false" >> $GITHUB_OUTPUT
         continue-on-error: true
       - id: check_changes_env
         name: Check for Changes (Environment)
