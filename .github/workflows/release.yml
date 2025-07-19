@@ -39,9 +39,11 @@ jobs:
       - name: Check for Changes
         id: check_changes
         run: |
-          git diff --staged --quiet
-          echo "changes_detected=false" >> $GITHUB_OUTPUT
-        continue-on-error: true
+          if git diff --staged --quiet; then
+            echo "changes_detected=false" >> $GITHUB_OUTPUT
+          else
+            echo "changes_detected=true" >> $GITHUB_OUTPUT
+          fi
       - id: check_changes_env
         name: Check for Changes (Environment)
         run: |
