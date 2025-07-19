@@ -39,12 +39,12 @@ jobs:
         id: check_changes
         run: |
           if git diff --staged --quiet; then
-            echo "changes_detected=false" >> $GITHUB_ENV
+            echo "::set-output name=changes_detected::false"
           else
-            echo "changes_detected=true" >> $GITHUB_ENV
+            echo "::set-output name=changes_detected::true"
           fi
       - name: Commit Changes
-        if: env.changes_detected == 'true'
+        if: steps.check_changes.outputs.changes_detected == 'true'
         run: |
           git commit -m "Update version to ${{ github.event.inputs.version }}"
           git push origin develop
