@@ -36,7 +36,7 @@ jobs:
           # Update version in develop
           sed -i "s/^__version__ = .*/__version__ = '${{ github.event.inputs.version }}'/" gitfleet.py
           git add gitfleet.py
-          git commit -m "Update version to ${{ github.event.inputs.version }}" || echo "No changes to commit"
+          git diff --staged --quiet && echo "No changes to commit" || git commit -m "Update version to ${{ github.event.inputs.version }}"
           git push origin develop
           
           # Merge to main with proper history
