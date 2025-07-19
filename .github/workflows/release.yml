@@ -48,7 +48,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "changes_detected=false" >> $GITHUB_ENV
           else
-            echo "changes_detected=true" >> $GITHUB_ENV
+            echo "changes_detected=true" >> $GITHUB_ENV;
         env:
           changes_detected: ${{ env.changes_detected }}
           
