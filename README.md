@@ -224,8 +224,8 @@ releases:
         extract: false
 ```
 
-- 各ファイルごとに保存先や展開有無を柔軟に指定できます。
-- `extract` を省略した場合は `true` となります。
+- You can flexibly specify the destination and whether to extract for each file.
+- If `extract` is omitted, it defaults to `true`.
 
 ### Notes
 - Release assets are always fetched by tag.
