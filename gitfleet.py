@@ -260,9 +260,26 @@ class Repository:
                 return current_sha1.startswith(self.config["revision"])
 
             elif self.revision_type == RevisionType.TAGS:
-                target_sha1 = GitRunner.run_command(
-                    f"git rev-list -n 1 {self.config['revision']}", cwd=self.dest_path
+                # Resolve remote tag SHA1, accounting for annotated tags (represented with ^{})
+                ls_remote_out = GitRunner.run_command(
+                    f"git ls-remote origin {self.config['revision']}",
+                    cwd=self.dest_path,
                 )
+                target_sha1 = None
+                lines = ls_remote_out.splitlines()
+                # Search for annotated tag dereferenced commit first
+                for line in lines:
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[1] == f"{self.config['revision']}^{{}}":
+                        target_sha1 = parts[0]
+                        break
+                if not target_sha1:
+                    # Fallback to direct tag reference (lightweight tag)
+                    for line in lines:
+                        parts = line.split()
+                        if len(parts) >= 2 and parts[1] == self.config["revision"]:
+                            target_sha1 = parts[0]
+                            break
                 return current_sha1 == target_sha1
 
             elif self.revision_type == RevisionType.HEADS:
@@ -306,6 +323,13 @@ class Repository:
 
             # Fetch updates
             GitRunner.run_command("git fetch", cwd=self.dest_path, dry_run=self.dry_run)
+            if self.revision_type == RevisionType.TAGS and self.refs_target:
+                # Force fetch specific tag to ensure it's up-to-date and exists locally
+                GitRunner.run_command(
+                    f"git fetch origin refs/tags/{self.refs_target}:refs/tags/{self.refs_target} -f",
+                    cwd=self.dest_path,
+                    dry_run=self.dry_run,
+                )
 
             # Check working directory status
             is_dirty = False
@@ -536,6 +560,7 @@ class Repository:
             # Clone or update repository
             if requires_clean_clone:
                 self.clone()
+                self.update()
             else:
                 self.update()
 
