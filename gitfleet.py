@@ -12,7 +12,7 @@ from argparse import RawTextHelpFormatter
 import json
 import logging
 import concurrent.futures
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple
 import time
 import urllib.request
 import urllib.parse
@@ -146,6 +146,43 @@ class GitRunner:
             return result.lower() == "true"
         except GitError:
             return False
+
+    @staticmethod
+    def describe_local_work(path: str) -> List[str]:
+        """Describe work in a checkout that exists nowhere else
+
+        A destination that gitfleet would delete and re-clone may be somebody's
+        working clone. Anything listed here would be lost by that deletion.
+
+        Args:
+            path: Path to the repository
+
+        Returns:
+            Human-readable reasons, empty when the checkout holds nothing that
+            is not already on a remote. Untracked files are not counted, in
+            line with the dirty check used by update().
+        """
+        reasons: List[str] = []
+        try:
+            if GitRunner.run_command(
+                "git status --porcelain --untracked-files=no", cwd=path
+            ):
+                reasons.append("uncommitted changes")
+            # Commits reachable from HEAD or any local branch that no
+            # remote-tracking ref contains. A repository without remotes
+            # reports every commit here, which is the intended answer.
+            if GitRunner.run_command(
+                "git rev-list --max-count=1 HEAD --branches --not --remotes",
+                cwd=path,
+            ):
+                reasons.append("commits not present on any remote")
+            if GitRunner.run_command("git stash list", cwd=path):
+                reasons.append("stash entries")
+        except GitError:
+            # Not a usable git repository: nothing here can be shown to be
+            # local work, so the caller keeps its existing behaviour.
+            pass
+        return reasons
 
     @staticmethod
     def build_clone_options(
@@ -524,6 +561,16 @@ class Repository:
                 revision_matches = self.check_revision_match()
 
                 if should_be_shallow != current_is_shallow or not revision_matches:
+                    local_work: List[str] = []
+                    if not self.dry_run:
+                        local_work = GitRunner.describe_local_work(self.dest_path)
+                    if local_work:
+                        raise GitError(
+                            f"{self.name}: {self.dest_path} needs a clean clone "
+                            f"but has {', '.join(local_work)}. Commit and push "
+                            "(or discard) that work, or remove the directory "
+                            "yourself, then run gitfleet again"
+                        )
                     logger.info(
                         f"{self.name}: Repository state mismatch - performing clean clone"
                     )

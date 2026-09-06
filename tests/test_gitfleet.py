@@ -4,6 +4,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
 import shutil
+import subprocess
 import tempfile
 import pytest
 from gitfleet import Repository, ConfigLoader, FleetManager
@@ -665,3 +666,125 @@ def test_config_loader_copy_field_type(tmp_path):
         json.dump(config, f)
     loaded = ConfigLoader.load_config(str(config_path))
     assert loaded["repositories"][0]["copy"] == []
+
+
+# --- protection of local work on clean re-clone ---------------------------
+
+
+def _git(cwd, *args):
+    cmd = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args]
+    return subprocess.check_output(cmd, cwd=cwd).decode().strip()
+
+
+def make_origin_with_tags(tmp_path):
+    """Bare origin with commits tagged v1 and v2, plus a full clone at v1."""
+    work = tmp_path / "work"
+    work.mkdir()
+    _git(work, "init", "-q", "-b", "main")
+    (work / "a.txt").write_text("one")
+    _git(work, "add", "a.txt")
+    _git(work, "commit", "-q", "-m", "one")
+    _git(work, "tag", "v1")
+    (work / "a.txt").write_text("two")
+    _git(work, "commit", "-q", "-am", "two")
+    _git(work, "tag", "v2")
+    origin = tmp_path / "origin.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(work), str(origin))
+    dest = tmp_path / "dest"
+    _git(tmp_path, "clone", "-q", str(origin), str(dest))
+    _git(dest, "checkout", "-q", "v1")
+    return origin, dest
+
+
+def _config(origin, dest, revision="refs/tags/v2"):
+    return {
+        "src": str(origin),
+        "dest": str(dest),
+        "revision": revision,
+        "shallow-clone": False,
+    }
+
+
+def test_sync_reclones_when_checkout_holds_no_local_work(tmp_path):
+    origin, dest = make_origin_with_tags(tmp_path)
+    repo = Repository(_config(origin, dest), str(tmp_path), dry_run=False)
+    assert repo.sync() is True
+    assert _git(dest, "rev-parse", "HEAD") == _git(dest, "rev-list", "-n", "1", "v2")
+
+
+def test_sync_refuses_to_delete_uncommitted_changes(tmp_path, caplog):
+    origin, dest = make_origin_with_tags(tmp_path)
+    (dest / "a.txt").write_text("edited locally")
+    repo = Repository(_config(origin, dest), str(tmp_path), dry_run=False)
+    with caplog.at_level("ERROR"):
+        assert repo.sync() is False
+    assert (dest / "a.txt").read_text() == "edited locally"
+    assert "uncommitted changes" in caplog.text
+
+
+def test_sync_refuses_to_delete_unpushed_commits(tmp_path, caplog):
+    origin, dest = make_origin_with_tags(tmp_path)
+    _git(dest, "checkout", "-q", "-b", "feature")
+    (dest / "b.txt").write_text("new")
+    _git(dest, "add", "b.txt")
+    _git(dest, "commit", "-q", "-m", "local only")
+    local_sha = _git(dest, "rev-parse", "HEAD")
+    repo = Repository(_config(origin, dest), str(tmp_path), dry_run=False)
+    with caplog.at_level("ERROR"):
+        assert repo.sync() is False
+    assert dest.exists()
+    assert _git(dest, "rev-parse", "HEAD") == local_sha
+    assert "commits not present on any remote" in caplog.text
+
+
+def test_sync_refuses_to_delete_stash(tmp_path, caplog):
+    origin, dest = make_origin_with_tags(tmp_path)
+    (dest / "a.txt").write_text("stashed")
+    _git(dest, "stash", "-q")
+    repo = Repository(_config(origin, dest), str(tmp_path), dry_run=False)
+    with caplog.at_level("ERROR"):
+        assert repo.sync() is False
+    assert "stash entries" in caplog.text
+
+
+def test_sync_reclones_when_local_branch_is_pushed(tmp_path):
+    # A local branch whose commits exist on the remote is not local work.
+    origin, dest = make_origin_with_tags(tmp_path)
+    _git(dest, "checkout", "-q", "-b", "feature")
+    (dest / "b.txt").write_text("new")
+    _git(dest, "add", "b.txt")
+    _git(dest, "commit", "-q", "-m", "pushed")
+    _git(dest, "push", "-q", "origin", "feature")
+    repo = Repository(_config(origin, dest), str(tmp_path), dry_run=False)
+    assert repo.sync() is True
+    assert _git(dest, "rev-parse", "HEAD") == _git(dest, "rev-list", "-n", "1", "v2")
+
+
+def test_describe_local_work_repo_without_remote(tmp_path):
+    from gitfleet import GitRunner
+
+    repo = tmp_path / "fresh"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "a.txt").write_text("x")
+    _git(repo, "add", "a.txt")
+    _git(repo, "commit", "-q", "-m", "first")
+    assert GitRunner.describe_local_work(str(repo)) == [
+        "commits not present on any remote"
+    ]
+
+
+def test_describe_local_work_non_repository(tmp_path):
+    from gitfleet import GitRunner
+
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert GitRunner.describe_local_work(str(plain)) == []
+
+
+def test_sync_dry_run_does_not_inspect_local_work(tmp_path, monkeypatch):
+    origin, dest = make_origin_with_tags(tmp_path)
+    (dest / "a.txt").write_text("edited locally")
+    repo = Repository(_config(origin, dest), str(tmp_path), dry_run=True)
+    assert repo.sync() is True
+    assert dest.exists()
