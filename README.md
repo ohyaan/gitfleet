@@ -232,6 +232,10 @@ releases:
 - Extraction is supported for the listed archive formats only.
 - The `releases` section is optional and backward compatible.
 - All features work with both YAML and JSON configuration files.
+- When a checkout no longer matches its configured revision (or its shallow
+  state), GitFleet deletes it and clones again. It refuses to do so, and exits
+  non-zero, if the checkout holds uncommitted changes, stash entries, or
+  commits that are not on any remote. Untracked files are not protected.
 
 ## Advanced Usage
 
@@ -394,6 +398,15 @@ ssh -T git@github.com
 # Or use HTTPS with credentials
 git config --global credential.helper store
 ```
+
+**Q: GitFleet stops with "needs a clean clone but has ..."**
+```
+Failed to sync repository engine: /path/external/engine needs a clean clone but has commits not present on any remote. ...
+```
+A: The destination is being used as a working clone and holds work that exists
+nowhere else, so GitFleet leaves it alone. Push or discard that work, or remove
+the directory yourself, then run GitFleet again. Other repositories in the fleet
+are still processed; the exit code is non-zero so scripts notice.
 
 **Q: Submodule processing fails**
 A: Ensure the repository has proper `.gitmodules` file and submodule URLs are accessible.
