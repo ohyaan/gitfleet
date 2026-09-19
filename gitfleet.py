@@ -21,7 +21,7 @@ import urllib.error
 import zipfile
 import tarfile
 
-__version__ = 'v1.2.2'
+__version__ = ' v1.3.0'
 
 # Configure logging
 logging.basicConfig(
