@@ -133,6 +133,14 @@
             },
             "additionalProperties": false
           }
+        },
+        "patches": {
+          "type": "array",
+          "description": "Patch files applied to the checkout with `git apply` after every clone or update, in order. Paths are relative to the fleet configuration file or absolute. Applied patches are recorded and reverted before the next update, so they are never mistaken for local work.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     }

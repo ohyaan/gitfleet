@@ -141,6 +141,7 @@ Each repository entry supports the following properties:
 | `clone-submodule` | Clone submodule | No | `false` |
 | `clone-subfleet` | Process nested fleet file | No | `false` |
 | `copy` | Selective file/directory copy list (see below) | No | - |
+| `patches` | Patch files applied to the checkout after every sync (see below) | No | - |
 
 #### Selective File/Directory Copy (`copy.repoPath`)
 
@@ -176,6 +177,48 @@ Each `copy` entry supports:
 |------------|-----------------------------------------------------|----------|---------|
 | `repoPath` | Path to file or directory in the repository         | Yes      | -       |
 | `dest`     | Destination path to copy to (relative/absolute)     | Yes      | -       |
+
+---
+
+#### Patches (`patches`)
+
+Some dependencies need a small local change that upstream will not take, or
+that you do not want to maintain as a fork. List patch files under `patches`
+and GitFleet applies them to the checkout with `git apply` after every clone
+or update, in the order given:
+
+```yaml
+repositories:
+  - src: https://github.com/example/lib.git
+    dest: external/lib
+    revision: 3f2a9c1d4e5b6a7f8091a2b3c4d5e6f708192a3b
+    patches:
+      - patches/lib-fix-build.patch      # Relative to the fleet config, or absolute
+      - patches/lib-add-option.patch
+```
+
+Behavior:
+- Patches touch only the working tree. The checkout stays a plain clone of the
+  configured revision; `git status` inside it shows the patched files as
+  modified.
+- GitFleet keeps a copy of every patch it applied under the checkout's `.git`
+  directory. Before the next update (or re-clone) it reverts exactly those
+  copies, then checks out the new revision and applies the current patch
+  files again. Editing or replacing a patch file therefore takes effect on the
+  next run, and removing `patches` from the entry restores the pristine tree.
+- Because the patches are reverted first, the files they touch are not
+  counted as local work by the re-clone protection. If somebody edited a
+  patched file by hand, the revert fails and GitFleet stops with an error
+  naming the patch, instead of discarding the edit.
+- A patch that does not apply fails the repository, and any patch applied
+  earlier in the same run is reversed, so a half-patched tree is never left
+  behind. A missing patch file is an error as well.
+- Patches are applied before the nested fleet (`clone-subfleet`) is read and
+  before `copy` runs, so both see the patched content.
+- `--dry-run` reports which patches would be applied and changes nothing.
+
+Patches are created the usual way, for example
+`git diff > ../patches/lib-fix-build.patch` from inside a modified checkout.
 
 ---
 
@@ -232,6 +275,12 @@ releases:
 - Extraction is supported for the listed archive formats only.
 - The `releases` section is optional and backward compatible.
 - All features work with both YAML and JSON configuration files.
+- When a checkout no longer matches its configured revision (or its shallow
+  state), GitFleet deletes it and clones again. It refuses to do so, and exits
+  non-zero, if the checkout holds uncommitted changes, stash entries, or
+  commits that are not on any remote. Untracked files are not protected.
+  Modifications made by `patches` are GitFleet's own and are reverted before
+  this check, so they never block a re-clone.
 
 ## Advanced Usage
 
@@ -394,6 +443,15 @@ ssh -T git@github.com
 # Or use HTTPS with credentials
 git config --global credential.helper store
 ```
+
+**Q: GitFleet stops with "needs a clean clone but has ..."**
+```
+Failed to sync repository engine: /path/external/engine needs a clean clone but has commits not present on any remote. ...
+```
+A: The destination is being used as a working clone and holds work that exists
+nowhere else, so GitFleet leaves it alone. Push or discard that work, or remove
+the directory yourself, then run GitFleet again. Other repositories in the fleet
+are still processed; the exit code is non-zero so scripts notice.
 
 **Q: Submodule processing fails**
 A: Ensure the repository has proper `.gitmodules` file and submodule URLs are accessible.

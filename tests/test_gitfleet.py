@@ -1,9 +1,11 @@
 import sys
 import os
+import json
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
 import shutil
+import subprocess
 import tempfile
 import pytest
 from gitfleet import Repository, ConfigLoader, FleetManager
@@ -665,3 +667,317 @@ def test_config_loader_copy_field_type(tmp_path):
         json.dump(config, f)
     loaded = ConfigLoader.load_config(str(config_path))
     assert loaded["repositories"][0]["copy"] == []
+
+
+# --- protection of local work on clean re-clone ---------------------------
+
+
+def _git(cwd, *args):
+    cmd = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args]
+    return subprocess.check_output(cmd, cwd=cwd).decode().strip()
+
+
+def make_origin_with_tags(tmp_path):
+    """Bare origin with commits tagged v1 and v2, plus a full clone at v1."""
+    work = tmp_path / "work"
+    work.mkdir()
+    _git(work, "init", "-q", "-b", "main")
+    (work / "a.txt").write_text("one")
+    _git(work, "add", "a.txt")
+    _git(work, "commit", "-q", "-m", "one")
+    _git(work, "tag", "v1")
+    (work / "a.txt").write_text("two")
+    _git(work, "commit", "-q", "-am", "two")
+    _git(work, "tag", "v2")
+    origin = tmp_path / "origin.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(work), str(origin))
+    dest = tmp_path / "dest"
+    _git(tmp_path, "clone", "-q", str(origin), str(dest))
+    _git(dest, "checkout", "-q", "v1")
+    return origin, dest
+
+
+def _config(origin, dest, revision="refs/tags/v2"):
+    return {
+        "src": str(origin),
+        "dest": str(dest),
+        "revision": revision,
+        "shallow-clone": False,
+    }
+
+
+def test_sync_reclones_when_checkout_holds_no_local_work(tmp_path):
+    origin, dest = make_origin_with_tags(tmp_path)
+    repo = Repository(_config(origin, dest), str(tmp_path), dry_run=False)
+    assert repo.sync() is True
+    assert _git(dest, "rev-parse", "HEAD") == _git(dest, "rev-list", "-n", "1", "v2")
+
+
+def test_sync_refuses_to_delete_uncommitted_changes(tmp_path, caplog):
+    origin, dest = make_origin_with_tags(tmp_path)
+    (dest / "a.txt").write_text("edited locally")
+    repo = Repository(_config(origin, dest), str(tmp_path), dry_run=False)
+    with caplog.at_level("ERROR"):
+        assert repo.sync() is False
+    assert (dest / "a.txt").read_text() == "edited locally"
+    assert "uncommitted changes" in caplog.text
+
+
+def test_sync_refuses_to_delete_unpushed_commits(tmp_path, caplog):
+    origin, dest = make_origin_with_tags(tmp_path)
+    _git(dest, "checkout", "-q", "-b", "feature")
+    (dest / "b.txt").write_text("new")
+    _git(dest, "add", "b.txt")
+    _git(dest, "commit", "-q", "-m", "local only")
+    local_sha = _git(dest, "rev-parse", "HEAD")
+    repo = Repository(_config(origin, dest), str(tmp_path), dry_run=False)
+    with caplog.at_level("ERROR"):
+        assert repo.sync() is False
+    assert dest.exists()
+    assert _git(dest, "rev-parse", "HEAD") == local_sha
+    assert "commits not present on any remote" in caplog.text
+
+
+def test_sync_refuses_to_delete_stash(tmp_path, caplog):
+    origin, dest = make_origin_with_tags(tmp_path)
+    (dest / "a.txt").write_text("stashed")
+    _git(dest, "stash", "-q")
+    repo = Repository(_config(origin, dest), str(tmp_path), dry_run=False)
+    with caplog.at_level("ERROR"):
+        assert repo.sync() is False
+    assert "stash entries" in caplog.text
+
+
+def test_sync_reclones_when_local_branch_is_pushed(tmp_path):
+    # A local branch whose commits exist on the remote is not local work.
+    origin, dest = make_origin_with_tags(tmp_path)
+    _git(dest, "checkout", "-q", "-b", "feature")
+    (dest / "b.txt").write_text("new")
+    _git(dest, "add", "b.txt")
+    _git(dest, "commit", "-q", "-m", "pushed")
+    _git(dest, "push", "-q", "origin", "feature")
+    repo = Repository(_config(origin, dest), str(tmp_path), dry_run=False)
+    assert repo.sync() is True
+    assert _git(dest, "rev-parse", "HEAD") == _git(dest, "rev-list", "-n", "1", "v2")
+
+
+def test_describe_local_work_repo_without_remote(tmp_path):
+    from gitfleet import GitRunner
+
+    repo = tmp_path / "fresh"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "a.txt").write_text("x")
+    _git(repo, "add", "a.txt")
+    _git(repo, "commit", "-q", "-m", "first")
+    assert GitRunner.describe_local_work(str(repo)) == [
+        "commits not present on any remote"
+    ]
+
+
+def test_describe_local_work_non_repository(tmp_path):
+    from gitfleet import GitRunner
+
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert GitRunner.describe_local_work(str(plain)) == []
+
+
+def test_sync_dry_run_does_not_inspect_local_work(tmp_path, monkeypatch):
+    origin, dest = make_origin_with_tags(tmp_path)
+    (dest / "a.txt").write_text("edited locally")
+    repo = Repository(_config(origin, dest), str(tmp_path), dry_run=True)
+    assert repo.sync() is True
+    assert dest.exists()
+
+
+# ---------------------------------------------------------------------------
+# patches
+# ---------------------------------------------------------------------------
+
+
+def make_patch(tmp_path, name, filename, content):
+    """A patch that creates `filename` with `content`, produced by git itself."""
+    scratch = tmp_path / f"scratch-{name}"
+    scratch.mkdir()
+    _git(scratch, "init", "-q", "-b", "main")
+    (scratch / filename).write_text(content)
+    _git(scratch, "add", filename)
+    diff = subprocess.check_output(["git", "diff", "--cached"], cwd=scratch).decode()
+    patches = tmp_path / "patches"
+    patches.mkdir(exist_ok=True)
+    patch = patches / f"{name}.patch"
+    patch.write_text(diff)
+    shutil.rmtree(scratch)
+    return patch
+
+
+def _patched_config(origin, dest, patches, revision="refs/tags/v1", **extra):
+    cfg = _config(origin, dest, revision)
+    cfg["patches"] = [str(p) for p in patches]
+    cfg.update(extra)
+    return cfg
+
+
+def _applied_record(dest):
+    record = dest / ".git" / "gitfleet-patches" / "applied.json"
+    return json.loads(record.read_text()) if record.exists() else None
+
+
+def test_patches_apply_on_clone(tmp_path):
+    origin, dest = make_origin_with_tags(tmp_path)
+    shutil.rmtree(dest)
+    patch = make_patch(tmp_path, "p1", "p.txt", "patched\n")
+    repo = Repository(_patched_config(origin, dest, [patch]), str(tmp_path))
+    assert repo.sync() is True
+    assert (dest / "p.txt").read_text() == "patched\n"
+    record = _applied_record(dest)
+    assert record is not None and [r["path"] for r in record] == [str(patch)]
+    # Only the working tree is patched: nothing is staged or committed.
+    assert _git(dest, "status", "--porcelain", "--untracked-files=no") == ""
+
+
+def test_patches_resync_is_idempotent(tmp_path, caplog):
+    origin, dest = make_origin_with_tags(tmp_path)
+    patch = make_patch(tmp_path, "p1", "p.txt", "patched\n")
+    repo = Repository(_patched_config(origin, dest, [patch]), str(tmp_path))
+    assert repo.sync() is True
+    with caplog.at_level("WARNING"):
+        assert repo.sync() is True
+    assert (dest / "p.txt").read_text() == "patched\n"
+    assert "not clean" not in caplog.text
+    assert _git(dest, "status", "--porcelain", "--untracked-files=no") == ""
+    # git status shows only the patch's file, which is what the docs promise.
+    assert _git(dest, "status", "--porcelain") == "?? p.txt"
+
+
+def test_patches_survive_reclone_to_new_revision(tmp_path):
+    origin, dest = make_origin_with_tags(tmp_path)
+    patch = make_patch(tmp_path, "p1", "p.txt", "patched\n")
+    assert Repository(_patched_config(origin, dest, [patch]), str(tmp_path)).sync()
+    # A revision change re-clones. The patched tree must not count as local
+    # work, and the patch must be present again afterwards.
+    repo = Repository(
+        _patched_config(origin, dest, [patch], revision="refs/tags/v2"), str(tmp_path)
+    )
+    assert repo.sync() is True
+    assert _git(dest, "rev-parse", "HEAD") == _git(dest, "rev-list", "-n", "1", "v2")
+    assert (dest / "p.txt").read_text() == "patched\n"
+
+
+def test_patches_survive_branch_update(tmp_path):
+    origin, dest = make_origin_with_tags(tmp_path)
+    patch = make_patch(tmp_path, "p1", "p.txt", "patched\n")
+    cfg = _patched_config(origin, dest, [patch], revision="refs/heads/main")
+    assert Repository(cfg, str(tmp_path)).sync() is True
+    # Advance origin/main, then sync again: the update path must revert,
+    # pull (the tree is clean at that point) and re-apply.
+    work = tmp_path / "work"
+    (work / "a.txt").write_text("three")
+    _git(work, "commit", "-q", "-am", "three")
+    _git(work, "push", "-q", str(origin), "main")
+    assert Repository(cfg, str(tmp_path)).sync() is True
+    assert (dest / "a.txt").read_text() == "three"
+    assert (dest / "p.txt").read_text() == "patched\n"
+
+
+def test_patches_changed_file_is_reapplied(tmp_path):
+    origin, dest = make_origin_with_tags(tmp_path)
+    patch = make_patch(tmp_path, "p1", "p.txt", "patched\n")
+    cfg = _patched_config(origin, dest, [patch])
+    assert Repository(cfg, str(tmp_path)).sync() is True
+    newer = make_patch(tmp_path, "p1-v2", "p.txt", "patched v2\n")
+    shutil.copy(newer, patch)
+    assert Repository(cfg, str(tmp_path)).sync() is True
+    assert (dest / "p.txt").read_text() == "patched v2\n"
+
+
+def test_patches_removed_from_config_are_reverted(tmp_path):
+    origin, dest = make_origin_with_tags(tmp_path)
+    patch = make_patch(tmp_path, "p1", "p.txt", "patched\n")
+    assert Repository(_patched_config(origin, dest, [patch]), str(tmp_path)).sync()
+    assert Repository(_config(origin, dest, "refs/tags/v1"), str(tmp_path)).sync()
+    assert not (dest / "p.txt").exists()
+    assert _applied_record(dest) is None
+
+
+def test_patches_refuse_to_discard_edits_to_patched_files(tmp_path, caplog):
+    origin, dest = make_origin_with_tags(tmp_path)
+    patch = make_patch(tmp_path, "p1", "p.txt", "patched\n")
+    cfg = _patched_config(origin, dest, [patch])
+    assert Repository(cfg, str(tmp_path)).sync() is True
+    (dest / "p.txt").write_text("edited by hand\n")
+    with caplog.at_level("ERROR"):
+        assert Repository(cfg, str(tmp_path)).sync() is False
+    assert (dest / "p.txt").read_text() == "edited by hand\n"
+    assert "cannot revert patch" in caplog.text and str(patch) in caplog.text
+
+
+def test_patches_missing_file_fails(tmp_path, caplog):
+    origin, dest = make_origin_with_tags(tmp_path)
+    missing = tmp_path / "patches" / "nope.patch"
+    repo = Repository(_patched_config(origin, dest, [missing]), str(tmp_path))
+    with caplog.at_level("ERROR"):
+        assert repo.sync() is False
+    assert "patch file not found" in caplog.text and str(missing) in caplog.text
+
+
+def test_patches_failure_rolls_back_earlier_patches(tmp_path, caplog):
+    origin, dest = make_origin_with_tags(tmp_path)
+    good = make_patch(tmp_path, "good", "p.txt", "patched\n")
+    # Creates a.txt, which already exists at every revision: never applies.
+    bad = make_patch(tmp_path, "bad", "a.txt", "conflict\n")
+    repo = Repository(_patched_config(origin, dest, [good, bad]), str(tmp_path))
+    with caplog.at_level("ERROR"):
+        assert repo.sync() is False
+    assert not (dest / "p.txt").exists()
+    assert _applied_record(dest) is None
+    assert "does not apply" in caplog.text and str(bad) in caplog.text
+
+
+def test_patches_relative_to_fleet_dir(tmp_path):
+    origin, dest = make_origin_with_tags(tmp_path)
+    patch = make_patch(tmp_path, "p1", "p.txt", "patched\n")
+    cfg = _config(origin, dest, "refs/tags/v1")
+    cfg["patches"] = [os.path.relpath(patch, tmp_path)]
+    assert Repository(cfg, str(tmp_path)).sync() is True
+    assert (dest / "p.txt").exists()
+
+
+def test_patches_dry_run_changes_nothing(tmp_path, caplog):
+    origin, dest = make_origin_with_tags(tmp_path)
+    patch = make_patch(tmp_path, "p1", "p.txt", "patched\n")
+    repo = Repository(
+        _patched_config(origin, dest, [patch]), str(tmp_path), dry_run=True
+    )
+    with caplog.at_level("INFO"):
+        assert repo.sync() is True
+    assert not (dest / "p.txt").exists()
+    assert "Would apply patch" in caplog.text
+
+
+def test_config_loader_patches_field_type(tmp_path):
+    import yaml
+
+    def cfg(patches):
+        return {
+            "schemaVersion": "v1",
+            "repositories": [
+                {
+                    "src": "https://x/y.git",
+                    "dest": "d",
+                    "revision": "refs/heads/main",
+                    "patches": patches,
+                }
+            ],
+        }
+
+    ok = tmp_path / "ok.yaml"
+    ok.write_text(yaml.safe_dump(cfg(["a.patch", "/abs/b.patch"])))
+    ConfigLoader.load_config(str(ok))
+    for bad_value in ("a.patch", [1], [""], [{"path": "a.patch"}]):
+        bad = tmp_path / "bad.yaml"
+        bad.write_text(yaml.safe_dump(cfg(bad_value)))
+        with pytest.raises(Exception) as exc:
+            ConfigLoader.load_config(str(bad))
+        assert "patches" in str(exc.value)
