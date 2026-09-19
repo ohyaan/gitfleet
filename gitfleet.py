@@ -4,6 +4,7 @@ import enum
 import os
 import sys
 import shlex
+import hashlib
 import shutil
 import subprocess
 import re
@@ -497,6 +498,192 @@ class Repository:
             logger.warning(f"Failed to get current SHA1 for {self.name}: {e}")
             return ""
 
+    # ------------------------------------------------------------------
+    # Patches
+    #
+    # A repository entry may list patch files that gitfleet applies to the
+    # checkout after every clone or update. The checkout itself stays a plain
+    # clone of the upstream revision: patches live only in the working tree,
+    # and gitfleet keeps a copy of every patch it applied under the checkout's
+    # .git directory so it can undo exactly that content later, even if the
+    # patch file in the fleet has since changed or been removed.
+    # ------------------------------------------------------------------
+
+    PATCH_STATE_DIR = "gitfleet-patches"
+    PATCH_STATE_FILE = "applied.json"
+
+    def patch_paths(self) -> List[str]:
+        """Configured patch files as absolute paths, in application order
+
+        Relative paths are resolved against the fleet configuration file's
+        directory, like copy destinations.
+        """
+        paths: List[str] = []
+        for entry in self.config.get("patches") or []:
+            if os.path.isabs(entry):
+                paths.append(entry)
+            else:
+                paths.append(os.path.abspath(os.path.join(self.working_dir, entry)))
+        return paths
+
+    def _patch_state_dir(self) -> Optional[str]:
+        """Directory holding the applied-patch record, or None if dest is not a repository"""
+        try:
+            git_dir = GitRunner.run_command(
+                "git rev-parse --git-dir", cwd=self.dest_path
+            )
+        except GitError:
+            return None
+        if not os.path.isabs(git_dir):
+            git_dir = os.path.join(self.dest_path, git_dir)
+        return os.path.join(git_dir, self.PATCH_STATE_DIR)
+
+    def _read_patch_state(self) -> List[Dict[str, str]]:
+        state_dir = self._patch_state_dir()
+        if state_dir is None:
+            return []
+        state_file = os.path.join(state_dir, self.PATCH_STATE_FILE)
+        if not os.path.isfile(state_file):
+            return []
+        try:
+            with open(state_file, "r", encoding="utf-8") as f:
+                records = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            raise GitError(
+                f"{self.name}: cannot read the applied-patch record {state_file}: {e}"
+            )
+        if not isinstance(records, list):
+            raise GitError(
+                f"{self.name}: the applied-patch record {state_file} is malformed"
+            )
+        return records
+
+    def _clear_patch_state(self):
+        state_dir = self._patch_state_dir()
+        if state_dir is not None and os.path.isdir(state_dir):
+            shutil.rmtree(state_dir)
+
+    @staticmethod
+    def _sha256_of_file(path: str) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def revert_patches(self):
+        """Undo the patches recorded as applied by an earlier run
+
+        Raises:
+            GitError: If a recorded patch no longer reverses cleanly, which
+                means somebody edited the files it touched. Those edits are
+                local work and must not be discarded silently.
+        """
+        if self.dry_run:
+            return
+        records = self._read_patch_state()
+        if not records:
+            return
+        state_dir = self._patch_state_dir()
+        assert state_dir is not None
+        for record in reversed(records):
+            stored = os.path.join(state_dir, record["stored"])
+            if not os.path.isfile(stored):
+                raise GitError(
+                    f"{self.name}: the applied-patch record names {stored}, which "
+                    "is missing. Remove the checkout and run gitfleet again"
+                )
+            try:
+                GitRunner.run_command(
+                    f"git apply --reverse --check {shlex.quote(stored)}",
+                    cwd=self.dest_path,
+                )
+                GitRunner.run_command(
+                    f"git apply --reverse {shlex.quote(stored)}", cwd=self.dest_path
+                )
+            except GitError:
+                raise GitError(
+                    f"{self.name}: cannot revert patch {record['path']}: files it "
+                    "touches were modified after gitfleet applied it. Restore them "
+                    "(git checkout -- <file>) or remove the checkout, then run "
+                    "gitfleet again"
+                )
+            logger.info(f"{self.name}: Reverted patch {record['path']}")
+        self._clear_patch_state()
+
+    def apply_patches(self):
+        """Apply the configured patches to the checkout and record them
+
+        Patches are applied in the configured order with `git apply`. If one
+        fails, the ones applied before it in this run are reversed so the
+        checkout is left pristine.
+
+        Raises:
+            GitError: If a patch file is missing or does not apply.
+        """
+        paths = self.patch_paths()
+        if not paths:
+            if not self.dry_run:
+                # Patches were removed from the configuration; the checkout
+                # is already pristine after revert_patches().
+                self._clear_patch_state()
+            return
+
+        for path in paths:
+            if not os.path.isfile(path):
+                raise GitError(f"{self.name}: patch file not found: {path}")
+
+        if self.dry_run:
+            for path in paths:
+                logger.info(f"[DRY RUN] Would apply patch {path} to {self.dest_path}")
+            return
+
+        state_dir = self._patch_state_dir()
+        if state_dir is None:
+            raise GitError(
+                f"{self.name}: {self.dest_path} is not a git repository; cannot apply patches"
+            )
+        os.makedirs(state_dir, exist_ok=True)
+
+        records: List[Dict[str, str]] = []
+        for index, path in enumerate(paths, start=1):
+            stored_name = f"{index:04d}.patch"
+            stored = os.path.join(state_dir, stored_name)
+            try:
+                GitRunner.run_command(
+                    f"git apply --check {shlex.quote(path)}", cwd=self.dest_path
+                )
+                GitRunner.run_command(
+                    f"git apply {shlex.quote(path)}", cwd=self.dest_path
+                )
+            except GitError:
+                # Roll back this run's patches so a half-patched tree is
+                # never left behind.
+                for done in reversed(records):
+                    GitRunner.run_command(
+                        f"git apply --reverse {shlex.quote(os.path.join(state_dir, done['stored']))}",
+                        cwd=self.dest_path,
+                    )
+                self._clear_patch_state()
+                raise GitError(
+                    f"{self.name}: patch {path} does not apply to revision "
+                    f"{self.config['revision']}"
+                )
+            shutil.copy2(path, stored)
+            records.append(
+                {
+                    "path": path,
+                    "sha256": self._sha256_of_file(path),
+                    "stored": stored_name,
+                }
+            )
+            logger.info(f"{self.name}: Applied patch {path}")
+
+        with open(
+            os.path.join(state_dir, self.PATCH_STATE_FILE), "w", encoding="utf-8"
+        ) as f:
+            json.dump(records, f, indent=2)
+
     def perform_copy_operations(self):
         """Perform selective file/directory copy operations as specified in the 'copy' config."""
         copy_list = self.config.get("copy")
@@ -555,6 +742,13 @@ class Repository:
 
             # Check if repository exists and if state matches requirements
             if self.exists():
+                # Patches applied by an earlier run are gitfleet's own
+                # modifications, not the user's. Undo them first so they are
+                # neither counted as local work below nor carried through a
+                # checkout of the new revision. They are applied again at the
+                # end of sync(), from the (possibly updated) patch files.
+                self.revert_patches()
+
                 current_is_shallow = GitRunner.is_shallow_repository(
                     self.dest_path, self.dry_run
                 )
@@ -585,6 +779,10 @@ class Repository:
                 self.clone()
             else:
                 self.update()
+
+            # Apply patches before anything reads the checkout: a patch may
+            # touch the nested fleet file or a file listed under copy.
+            self.apply_patches()
 
             # Process nested fleet if needed
             self.process_subfleet()
@@ -967,6 +1165,15 @@ class ConfigLoader:
                     raise ConfigError(
                         f"Repository #{idx}: 'copy' must be a list if present"
                     )
+                # Validate that patches is a list of paths if present
+                if "patches" in repo and repo["patches"] is not None:
+                    if not isinstance(repo["patches"], list) or not all(
+                        isinstance(entry, str) and entry for entry in repo["patches"]
+                    ):
+                        raise ConfigError(
+                            f"Repository #{idx}: 'patches' must be a list of "
+                            "patch file paths"
+                        )
 
         # Validate releases section
         if "releases" in config:
